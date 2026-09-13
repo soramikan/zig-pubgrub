@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("pubgrub", .{
         .root_source_file = b.path("src/pubgrub.zig"),
         .target = target,
+        .optimize = optimize,
     });
 
     const tests = b.addTest(.{
@@ -23,7 +24,7 @@ pub fn build(b: *std.Build) void {
 
     const fmt_step = b.step("fmt-check", "Check source formatting");
     const fmt = b.addFmt(.{
-        .paths = &.{ "src", "build.zig", "examples", "test" },
+        .paths = &.{ "src", "build.zig", "build.zig.zon", "examples", "test" },
         .check = true,
     });
     fmt_step.dependOn(&fmt.step);

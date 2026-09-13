@@ -24,7 +24,9 @@ pub fn Range(comptime V: type) type {
             high: Bound,
         };
 
-        /// Sorted, disjoint, non-adjacent, non-empty intervals.
+        /// Sorted, disjoint, non-adjacent, non-empty intervals. Do not
+        /// construct by hand — the constructors and set operations below
+        /// maintain this invariant and all methods rely on it.
         intervals: []const Interval,
 
         pub const empty: Self = .{ .intervals = &.{} };

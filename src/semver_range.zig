@@ -25,6 +25,11 @@ pub const ParseError = error{ Invalid, OutOfMemory };
 /// Unlike npm's implementation, pre-release versions are not excluded from
 /// ranges implicitly: `>=1.0.0` also admits `2.0.0-alpha` unless the range
 /// upper bound excludes it. Express exclusions with explicit bounds.
+///
+/// Deliberate deviations from npm's looser grammar: a wildcard must
+/// terminate a partial (`1.x.x` is invalid), `^`/`~` reject pre-release
+/// suffixes, a leading `v` is not accepted, and wildcards under `>`/`<=`/`<`
+/// yield the empty range while `>=`/exact/`^`/`~` yield the full range.
 pub fn parse(gpa: std.mem.Allocator, text: []const u8) ParseError!SemverRange {
     // A lone `|` is not a separator; only `||` is.
     var i: usize = 0;
@@ -36,18 +41,12 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8) ParseError!SemverRange {
     }
     var it = std.mem.splitSequence(u8, text, "||");
     var result: SemverRange = .empty;
-    var saw_any = false;
     while (it.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t");
-        if (trimmed.len == 0) {
-            if (saw_any) return error.Invalid;
-            continue;
-        }
-        saw_any = true;
+        if (trimmed.len == 0) return error.Invalid;
         const inter = try parseIntersection(gpa, trimmed);
         result = try result.unionWith(inter, gpa);
     }
-    if (!saw_any) return error.Invalid;
     return result;
 }
 
@@ -124,6 +123,8 @@ fn parseComparator(gpa: std.mem.Allocator, tok: []const u8) ParseError!SemverRan
         while (it.next()) |seg| {
             if (n >= 3) return error.Invalid;
             if (isWildcard(seg)) break;
+            // Match SemanticVersion.parse strictness: no leading zeros.
+            if (seg.len > 1 and seg[0] == '0') return error.Invalid;
             nums[n] = std.fmt.parseInt(u64, seg, 10) catch return error.Invalid;
             n += 1;
         }
@@ -178,9 +179,12 @@ fn parseComparator(gpa: std.mem.Allocator, tok: []const u8) ParseError!SemverRan
         .caret, .tilde => {
             if (with_suffix) return error.Invalid;
             const lvl: Bump = switch (kind) {
+                // Bump the leftmost non-zero component; a missing component
+                // counts as a wildcard, so `^0` bumps major and `^0.0`
+                // bumps minor.
                 .caret => blk: {
-                    if (ver.major != 0) break :blk .major;
-                    if (nums[1] == null or ver.minor != 0) break :blk .minor;
+                    if (ver.major != 0 or nums[1] == null) break :blk .major;
+                    if (ver.minor != 0 or nums[2] == null) break :blk .minor;
                     break :blk .patch;
                 },
                 .tilde => if (nums[1] == null) .major else .minor,
@@ -190,16 +194,16 @@ fn parseComparator(gpa: std.mem.Allocator, tok: []const u8) ParseError!SemverRan
             var hi_v = ver;
             switch (lvl) {
                 .major => {
-                    hi_v.major += 1;
+                    try bumpField(&hi_v.major);
                     hi_v.minor = 0;
                     hi_v.patch = 0;
                 },
                 .minor => {
-                    hi_v.minor += 1;
+                    try bumpField(&hi_v.minor);
                     hi_v.patch = 0;
                 },
                 .patch => {
-                    hi_v.patch += 1;
+                    try bumpField(&hi_v.patch);
                 },
             }
             return SemverRange.between(gpa, lo, true, hi_v, false);
@@ -210,21 +214,26 @@ fn parseComparator(gpa: std.mem.Allocator, tok: []const u8) ParseError!SemverRan
 
 const Bump = enum { major, minor, patch };
 
+/// `field += 1`, failing on overflow at `u64` max instead of wrapping.
+fn bumpField(field: *u64) ParseError!void {
+    field.* = std.math.add(u64, field.*, 1) catch return error.Invalid;
+}
+
 /// `[ver, ver + bump)` — used for partial equality like `1.2` meaning
 /// `>=1.2.0 <1.3.0`.
 fn upperBump(gpa: std.mem.Allocator, ver: SemanticVersion, bump: Bump) ParseError!SemverRange {
     var hi = ver;
     switch (bump) {
         .major => {
-            hi.major += 1;
+            try bumpField(&hi.major);
             hi.minor = 0;
             hi.patch = 0;
         },
         .minor => {
-            hi.minor += 1;
+            try bumpField(&hi.minor);
             hi.patch = 0;
         },
-        .patch => hi.patch += 1,
+        .patch => try bumpField(&hi.patch),
     }
     return SemverRange.between(gpa, ver, true, hi, false);
 }
@@ -234,15 +243,15 @@ fn aboveBump(gpa: std.mem.Allocator, ver: SemanticVersion, bump: Bump) ParseErro
     var lo = ver;
     switch (bump) {
         .major => {
-            lo.major += 1;
+            try bumpField(&lo.major);
             lo.minor = 0;
             lo.patch = 0;
         },
         .minor => {
-            lo.minor += 1;
+            try bumpField(&lo.minor);
             lo.patch = 0;
         },
-        .patch => lo.patch += 1,
+        .patch => try bumpField(&lo.patch),
     }
     return SemverRange.between(gpa, lo, true, null, true);
 }
@@ -252,15 +261,15 @@ fn upperBumpExcl(gpa: std.mem.Allocator, ver: SemanticVersion, bump: Bump) Parse
     var hi = ver;
     switch (bump) {
         .major => {
-            hi.major += 1;
+            try bumpField(&hi.major);
             hi.minor = 0;
             hi.patch = 0;
         },
         .minor => {
-            hi.minor += 1;
+            try bumpField(&hi.minor);
             hi.patch = 0;
         },
-        .patch => hi.patch += 1,
+        .patch => try bumpField(&hi.patch),
     }
     return SemverRange.between(gpa, null, true, hi, false);
 }
@@ -341,6 +350,19 @@ test "parse caret" {
     try T.expect(!z.contains(v("0.3.0")));
     const zz = try p("^0.0.3");
     try T.expect(!zz.contains(v("0.0.4")));
+    // Missing components are wildcards: `^0` ≡ `0.x.x`, `^0.0` ≡ `0.0.x`.
+    const w0 = try p("^0");
+    try T.expect(w0.contains(v("0.9.9")));
+    try T.expect(!w0.contains(v("1.0.0")));
+    const w00 = try p("^0.0");
+    try T.expect(w00.contains(v("0.0.9")));
+    try T.expect(!w00.contains(v("0.1.0")));
+    const w0x = try p("^0.0.x");
+    try T.expect(w0x.contains(v("0.0.9")));
+    try T.expect(!w0x.contains(v("0.1.0")));
+    const w02 = try p("^0.2");
+    try T.expect(w02.contains(v("0.2.9")));
+    try T.expect(!w02.contains(v("0.3.0")));
 }
 
 test "parse tilde" {
@@ -350,6 +372,12 @@ test "parse tilde" {
     const t = try p("~1");
     try T.expect(t.contains(v("1.9.9")));
     try T.expect(!t.contains(v("2.0.0")));
+    const t0 = try p("~0");
+    try T.expect(t0.contains(v("0.9.9")));
+    try T.expect(!t0.contains(v("1.0.0")));
+    const t00 = try p("~0.0");
+    try T.expect(t00.contains(v("0.0.9")));
+    try T.expect(!t00.contains(v("0.1.0")));
 }
 
 test "parse union" {

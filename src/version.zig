@@ -87,17 +87,23 @@ pub const SemanticVersion = struct {
     }
 
     fn cmpIdent(a: []const u8, b: []const u8) std.math.Order {
-        const an = std.fmt.parseInt(u64, a, 10) catch null;
-        const bn = std.fmt.parseInt(u64, b, 10) catch null;
-        const a_numeric = an != null and allDigits(a);
-        const b_numeric = bn != null and allDigits(b);
+        const a_numeric = allDigits(a);
+        const b_numeric = allDigits(b);
         if (a_numeric and b_numeric) {
-            // Identifiers that overflow u64 compare by length then lexically.
-            if (an == null or bn == null) {
-                if (a.len != b.len) return std.math.order(a.len, b.len);
-                return std.mem.order(u8, a, b);
-            }
-            return std.math.order(an.?, bn.?);
+            const an = std.fmt.parseInt(u64, a, 10) catch null;
+            const bn = std.fmt.parseInt(u64, b, 10) catch null;
+            if (an != null and bn != null)
+                return std.math.order(an.?, bn.?);
+            // An identifier overflowing u64 is still numeric: compare by
+            // significant-digit count (leading zeros skipped), then digits.
+            var az: usize = 0;
+            while (az < a.len and a[az] == '0') az += 1;
+            var bz: usize = 0;
+            while (bz < b.len and b[bz] == '0') bz += 1;
+            const at = a[az..];
+            const bt = b[bz..];
+            if (at.len != bt.len) return std.math.order(at.len, bt.len);
+            return std.mem.order(u8, at, bt);
         }
         if (a_numeric) return .lt; // numeric < alphanumeric
         if (b_numeric) return .gt;

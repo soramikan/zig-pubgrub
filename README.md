@@ -1,14 +1,14 @@
 # zig-pubgrub
 
+[日本語版はこちら](README.ja.md)
+
 A [PubGrub](https://github.com/dart-lang/pub/tree/main/doc/solver.md) version
 solver for Zig, generic over package and version types. Ported from Dart pub's
 reference implementation: unit propagation, conflict-driven learning with
 backjumping, and human-readable conflict explanations derived from the
 incompatibility derivation graph.
 
-Developed for the [lnako](https://github.com/soramikan/lnako) package system
-([issue #45](https://github.com/soramikan/lnako/issues/45)) and published as a
-standalone, reusable library.
+Published as a standalone, reusable library.
 
 ## Features
 

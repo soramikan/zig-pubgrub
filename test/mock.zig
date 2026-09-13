@@ -33,6 +33,10 @@ pub const Mock = struct {
     /// Optional failure injected into dependency fetches.
     dep_error: ?anyerror = null,
 
+    /// Package versions whose dependency metadata cannot be read
+    /// (`dependencies` → error.PackageNotFound).
+    bad_versions: []const Locked = &.{},
+
     fn findPkg(self: *const Mock, name: []const u8) ?*const Package {
         for (self.pkgs) |*p| {
             if (std.mem.eql(u8, p.name, name)) return p;
@@ -50,6 +54,11 @@ pub const Mock = struct {
 
     pub fn dependencies(self: *const Mock, gpa: Allocator, p: Pkg, version: V) !S.DepResult {
         if (self.dep_error) |e| return e;
+        for (self.bad_versions) |bv| {
+            if (!std.mem.eql(u8, bv.name, p.name)) continue;
+            const bad = V.parse(bv.version) catch continue;
+            if (V.cmp(bad, version) == .eq) return error.PackageNotFound;
+        }
         const entry = self.findPkg(p.name) orelse return error.PackageNotFound;
         const vers = entry.versions orelse return error.PackageNotFound;
         for (vers) |ver| {

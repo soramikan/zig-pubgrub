@@ -148,10 +148,12 @@ pub fn Solver(comptime P: type, comptime V: type) type {
             indexed: bool = false,
 
             /// Whether this incompatibility means solving has failed: empty,
-            /// or a single term referring to the root package.
+            /// or a single *positive* term referring to the root package.
             pub fn isFailure(self: Incompatibility, root: P) bool {
                 return self.terms.len == 0 or
-                    (self.terms.len == 1 and P.eql(self.terms[0].package, root));
+                    (self.terms.len == 1 and
+                        self.terms[0].term == .positive and
+                        P.eql(self.terms[0].package, root));
             }
         };
 
@@ -163,7 +165,10 @@ pub fn Solver(comptime P: type, comptime V: type) type {
             cause: ?u32,
             decision_level: u32,
 
+            /// The decided version; only valid on decisions (`cause == null`),
+            /// whose term is `positive(singleton(v))`.
             fn version(self: Assignment) V {
+                std.debug.assert(self.cause == null);
                 return self.term.positive.intervals[0].low.v.?;
             }
         };
@@ -217,7 +222,9 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     acc = if (acc) |x| try x.intersect(a.term, gpa) else a.term;
                     if (acc.?.relation(term) == .subset) return i;
                 }
-                unreachable;
+                // Invariant violation: the term was reported satisfied but no
+                // prefix satisfies it. Dart throws a StateError here.
+                return error.InternalInconsistency;
             }
 
             fn relation(self: *const PartialSolution, package: P, term: T) Relation {
@@ -438,24 +445,24 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     // Cache by index when the version is listed, else in the
                     // single extra slot.
                     var idx: ?usize = null;
-                    if (lister.versions_fetched and !lister.not_found) {
-                        for (lister.versions, 0..) |v, i| {
-                            if (V.cmp(v, version) == .eq) {
-                                idx = i;
-                                break;
-                            }
-                        }
-                    }
+                    if (lister.versions_fetched and !lister.not_found)
+                        idx = indexOfVersion(lister.versions, version);
                     if (idx) |i| {
                         if (lister.deps_cache.items[i]) |cached| return cached;
-                        const res: DepResult = try self.provider.dependencies(self.gpa, lister.pkg, version);
+                        const res: DepResult = try @as(
+                            anyerror!DepResult,
+                            self.provider.dependencies(self.gpa, lister.pkg, version),
+                        );
                         lister.deps_cache.items[i] = res;
                         return res;
                     }
                     if (lister.extra_deps_version) |ev| {
                         if (V.cmp(ev, version) == .eq) return lister.extra_deps.?;
                     }
-                    const res: DepResult = try self.provider.dependencies(self.gpa, lister.pkg, version);
+                    const res: DepResult = try @as(
+                        anyerror!DepResult,
+                        self.provider.dependencies(self.gpa, lister.pkg, version),
+                    );
                     lister.extra_deps = res;
                     lister.extra_deps_version = version;
                     return res;
@@ -533,7 +540,7 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                                             try changed.append(gpa, name);
                                             try in_changed.put(name, {});
                                         },
-                                        else => unreachable,
+                                        else => return error.InternalInconsistency,
                                     }
                                     break :outer;
                                 },
@@ -725,9 +732,21 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                         conflict = conflict or all_satisfied;
                     }
                     if (!conflict) {
-                        if (self.backtracking) self.attempted_solutions += 1;
-                        self.backtracking = false;
-                        try self.solution.decide(gpa, pkg, v);
+                        if (!term.range().contains(v)) {
+                            // The singleton-complement retry can pick a
+                            // version outside `term` to gather more general
+                            // incompatibilities; deciding it would collapse
+                            // the positive term to empty. The term itself
+                            // has no candidate.
+                            _ = try self.addIncompatibility(.{
+                                .terms = try self.singleTerm(pkg, term),
+                                .cause = .no_versions,
+                            }, true);
+                        } else {
+                            if (self.backtracking) self.attempted_solutions += 1;
+                            self.backtracking = false;
+                            try self.solution.decide(gpa, pkg, v);
+                        }
                     }
                     return pkg;
                 }
@@ -736,7 +755,10 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     if (lister.locked) |l| {
                         if (constraint.contains(l)) return 1;
                     }
-                    const versions = self.listVersions(lister) catch return 0;
+                    const versions = self.listVersions(lister) catch |e| switch (e) {
+                        error.PackageNotFound => return 0,
+                        else => return e,
+                    };
                     var n: usize = 0;
                     for (versions) |v| {
                         if (constraint.contains(v)) n += 1;
@@ -800,7 +822,24 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     };
                     const idx = indexOfVersion(versions, v);
 
-                    const res = try self.depsOf(lister, v);
+                    const res = self.depsOf(lister, v) catch |e| switch (e) {
+                        // The version's metadata cannot be read (e.g. a
+                        // lockfile version absent from the registry): the
+                        // version itself is unselectable.
+                        error.PackageNotFound => {
+                            const r = try R.singleton(gpa, v);
+                            lister.known_invalid = try lister.known_invalid.unionWith(r, gpa);
+                            const inc: Incompatibility = .{
+                                .terms = try self.singleTerm(lister.pkg, .{ .positive = r }),
+                                .cause = .no_versions,
+                                .indexed = false,
+                            };
+                            const out = try gpa.alloc(Incompatibility, 1);
+                            out[0] = inc;
+                            return out;
+                        },
+                        else => return e,
+                    };
                     switch (res) {
                         .unavailable => |reason| {
                             // Collapse the contiguous run of unavailable
@@ -893,7 +932,13 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     var i = at;
                     while (if (upper) i + 1 < versions.len else i > 0) {
                         const j = if (upper) i + 1 else i - 1;
-                        const res = try self.depsOf(lister, versions[j]);
+                        const res: DepResult = self.depsOf(lister, versions[j]) catch |e| switch (e) {
+                            // Unreadable neighbour (pub's _describeSafe
+                            // returns an empty manifest): every remaining
+                            // dependency counts as different.
+                            error.PackageNotFound => .{ .unavailable = null },
+                            else => return e,
+                        };
                         // The upper bound is the first different version; the
                         // lower bound is the last same version.
                         const boundary = if (upper) versions[j] else prev;
@@ -938,7 +983,12 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     var high: ?V = null;
                     var i = at;
                     while (i > 0) {
-                        const res = try self.depsOf(lister, versions[i - 1]);
+                        const res: DepResult = self.depsOf(lister, versions[i - 1]) catch |e| switch (e) {
+                            // Unreadable neighbours count as available
+                            // (empty manifest): they bound the run.
+                            error.PackageNotFound => .{ .known = &.{} },
+                            else => return e,
+                        };
                         if (res != .unavailable) {
                             low = versions[i];
                             break;
@@ -947,7 +997,10 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     }
                     i = at;
                     while (i + 1 < versions.len) {
-                        const res = try self.depsOf(lister, versions[i + 1]);
+                        const res: DepResult = self.depsOf(lister, versions[i + 1]) catch |e| switch (e) {
+                            error.PackageNotFound => .{ .known = &.{} },
+                            else => return e,
+                        };
                         if (res != .unavailable) {
                             high = versions[i + 1];
                             break;
@@ -1069,6 +1122,10 @@ pub fn Solver(comptime P: type, comptime V: type) type {
 
         /// Run version solving. `provider` is usually a pointer to the
         /// caller's metadata source; see the `Solver` docs for the interface.
+        ///
+        /// `root_deps`, `opts.constraints`, and any strings they reference are
+        /// borrowed, not copied: they must outlive the returned `Outcome`
+        /// whenever `.failed.store` or `.failed.message` is inspected.
         pub fn solve(
             gpa: Allocator,
             provider: anytype,
@@ -1086,12 +1143,15 @@ pub fn Solver(comptime P: type, comptime V: type) type {
 
             var sess = try Session(PT).init(a, provider, root, root_version, root_deps, opts);
             sess.run() catch |e| switch (e) {
-                error.VersionConflict => {
+                // `failure` is set only by resolveConflict; a provider may
+                // coincidentally raise the same error name, which must
+                // propagate rather than unwrap a null `failure`.
+                error.VersionConflict => if (sess.failure) |failure_id| {
                     var rep = Session(PT).Reporter{
                         .gpa = a,
                         .store = sess.store.items,
                         .root_pkg = root,
-                        .failure_id = sess.failure.?,
+                        .failure_id = failure_id,
                     };
                     const msg = try rep.write();
                     return .{
@@ -1099,11 +1159,11 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                         .attempted_solutions = sess.attempted_solutions,
                         .result = .{ .failed = .{
                             .message = msg,
-                            .root_incompatibility = sess.failure.?,
+                            .root_incompatibility = failure_id,
                             .store = sess.store.items,
                         } },
                     };
-                },
+                } else return e,
                 else => return e,
             };
 

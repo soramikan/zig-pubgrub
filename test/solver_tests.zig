@@ -492,6 +492,74 @@ test "provider errors propagate" {
     );
 }
 
+// Regression: the singleton-complement retry (constraint `* ∖ {v}`) may pick
+// a version outside the term to gather better incompatibilities, but must
+// never decide it — doing so collapsed the positive term and looped forever.
+test "retry never decides a version outside the term" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const registry = Mock{
+        .pkgs = &.{
+            .{ .name = "a", .versions = &.{.{
+                .version = "1.0.0",
+                .deps = &.{.{ .name = "b", .req = "*" }},
+            }} },
+            .{ .name = "b", .versions = &.{} },
+        },
+        .locked = &.{.{ .name = "b", .version = "2.0.0" }},
+    };
+    const deps = [_]S.Dependency{mock.dep(gpa, "a", "*")};
+    var out = try mock.solve(gpa, &registry, &deps, .{});
+    defer out.deinit();
+    const msg = mock.expectFailed(&out);
+    try T.expect(std.mem.indexOf(u8, msg, "b") != null);
+}
+
+// A listed version whose dependency metadata cannot be read is treated as
+// unselectable; with no other candidates the solve fails gracefully.
+test "unreadable metadata for the only candidate fails gracefully" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const registry = Mock{
+        .pkgs = &.{
+            .{ .name = "a", .versions = &.{.{
+                .version = "1.0.0",
+                .deps = &.{.{ .name = "b", .req = "*" }},
+            }} },
+            .{ .name = "b", .versions = &.{.{ .version = "1.0.0" }} },
+        },
+        .bad_versions = &.{.{ .name = "b", .version = "1.0.0" }},
+    };
+    const deps = [_]S.Dependency{mock.dep(gpa, "a", "*")};
+    var out = try mock.solve(gpa, &registry, &deps, .{});
+    defer out.deinit();
+    const msg = mock.expectFailed(&out);
+    try T.expect(std.mem.indexOf(u8, msg, "b") != null);
+}
+
+// A lockfile version absent from the registry yields a failed outcome (with
+// a "no versions" conflict), not a raw provider error.
+test "locked version missing from registry fails gracefully" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const registry = Mock{
+        .pkgs = &.{
+            .{ .name = "lib", .versions = &.{.{ .version = "1.0.0" }} },
+        },
+        .locked = &.{
+            .{ .name = "lib", .version = "2.0.0" },
+        },
+    };
+    const deps = [_]S.Dependency{mock.dep(gpa, "lib", ">=2.0.0")};
+    var out = try mock.solve(gpa, &registry, &deps, .{});
+    defer out.deinit();
+    const msg = mock.expectFailed(&out);
+    try T.expect(std.mem.indexOf(u8, msg, "lib") != null);
+}
+
 // Regression: a small contradictory graph once sent conflict resolution into
 // an unbounded merge loop. p2 needs p1, p1 needs p0 <0.1.0, but root pins
 // p0 >=0.1.0 and only p0 0.1.0 exists — the solver must report failure.

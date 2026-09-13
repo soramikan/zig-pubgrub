@@ -63,11 +63,11 @@ pub fn Reporter(comptime I: type) type {
                 try self.visit(self.failure_id, false);
             } else {
                 const s = try self.toString(self.failure_id);
-                try self.writeLine(
-                    self.failure_id,
-                    try self.fmt("Because {s}, version solving failed.", .{s}),
-                    false,
-                );
+                const msg = if (std.mem.eql(u8, s, "version solving failed"))
+                    try self.fmt("Version solving failed.", .{})
+                else
+                    try self.fmt("Because {s}, version solving failed.", .{s});
+                try self.writeLine(self.failure_id, msg, false);
             }
 
             var out: std.ArrayList(u8) = .empty;
@@ -301,10 +301,13 @@ pub fn Reporter(comptime I: type) type {
             const terms = inc.terms;
             switch (inc.cause) {
                 .dependency => {
-                    return self.fmt("{s} depends on {s}", .{
-                        try self.terse(terms[0], true),
-                        try self.terse(terms[1], false),
-                    });
+                    // A self-dependency normalizes to a single term; render
+                    // it through the generic path instead.
+                    if (terms.len == 2)
+                        return self.fmt("{s} depends on {s}", .{
+                            try self.terse(terms[0], true),
+                            try self.terse(terms[1], false),
+                        });
                 },
                 .no_versions => {
                     return self.fmt("no versions of {s} match {f}", .{
@@ -502,7 +505,7 @@ pub fn Reporter(comptime I: type) type {
                 for (ip.terms) |t| {
                     if (t.term == .positive) try parts.append(gpa, try self.terse(t, false));
                 }
-                try w.print(gpa, "if {s} then ", .{try std.mem.join(gpa, " or ", parts.items)});
+                try w.print(gpa, "if {s} then ", .{try std.mem.join(gpa, " and ", parts.items)});
             } else {
                 const verb = if (ip.cause == .dependency) "depends on" else "requires";
                 try w.print(gpa, "{s} {s} ", .{ try self.terse(prior_pos.?, true), verb });
@@ -556,7 +559,7 @@ pub fn Reporter(comptime I: type) type {
                 for (ip.terms) |t| {
                     if (t.term == .positive) try parts.append(gpa, try self.terse(t, false));
                 }
-                try w.print(gpa, "if {s} then ", .{try std.mem.join(gpa, " or ", parts.items)});
+                try w.print(gpa, "if {s} then ", .{try std.mem.join(gpa, " and ", parts.items)});
             } else {
                 try w.appendSlice(gpa, try self.terse(pos.?, true));
                 try w.appendSlice(gpa, if (ip.cause == .dependency) " depends on " else " requires ");

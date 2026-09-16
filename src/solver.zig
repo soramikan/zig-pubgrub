@@ -23,9 +23,14 @@ const Allocator = std.mem.Allocator;
 ///
 /// The metadata source is supplied per solve as a provider value (usually a
 /// pointer) implementing:
-///   - `fn listVersions(self, gpa, package: P) ![]V` — every selectable
-///     version, in any order. `error.PackageNotFound` produces a
-///     "doesn't exist" conflict instead of aborting the solve.
+///   - `fn listVersions(self, gpa, package: P) ![]const V` — every selectable
+///     version, in any order, possibly with duplicates. The solver copies,
+///     sorts and deduplicates the outer slice, but any memory referenced *by*
+///     the returned `V` values (e.g. pre-release/build strings in the included
+///     semver type) must stay valid until the `Outcome` is deinitialized:
+///     allocate it from the provided arena and do not free it.
+///     `error.PackageNotFound` produces a "doesn't exist" conflict instead of
+///     aborting the solve.
 ///   - `fn dependencies(self, gpa, package: P, version: V) !DepResult` —
 ///     `.known` dependencies, or `.unavailable` with an optional reason.
 ///   - optionally `fn lockedVersion(self, package: P) ?V` — a version recorded
@@ -408,7 +413,7 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                     }
                     // Coerce to anyerror so providers with narrow inferred
                     // error sets still hit the `else` branch.
-                    const raw_res: anyerror![]V = self.provider.listVersions(self.gpa, lister.pkg);
+                    const raw_res: anyerror![]const V = self.provider.listVersions(self.gpa, lister.pkg);
                     const raw = raw_res catch |e| switch (e) {
                         error.PackageNotFound => {
                             lister.versions_fetched = true;
@@ -417,12 +422,25 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                         },
                         else => return e,
                     };
-                    const versions = try self.gpa.dupe(V, raw);
-                    std.mem.sort(V, versions, {}, struct {
+                    const versions_slice = try self.gpa.dupe(V, raw);
+                    std.mem.sort(V, versions_slice, {}, struct {
                         fn lt(_: void, a: V, b: V) bool {
                             return V.cmp(a, b) == .lt;
                         }
                     }.lt);
+                    // Providers may return duplicates; the binary searches
+                    // below assume the list is sorted and unique.
+                    var versions = versions_slice;
+                    if (versions.len > 1) {
+                        var write: usize = 1;
+                        var read: usize = 1;
+                        while (read < versions.len) : (read += 1) {
+                            if (V.cmp(versions[read], versions[write - 1]) == .eq) continue;
+                            versions[write] = versions[read];
+                            write += 1;
+                        }
+                        versions = versions[0..write];
+                    }
                     lister.versions_fetched = true;
                     lister.versions = versions;
                     try lister.deps_cache.appendNTimes(self.gpa, null, versions.len);
@@ -870,12 +888,17 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                             if (new_deps.items.len == 0) return &.{};
 
                             sortDeps(new_deps.items);
+                            // A manifest may declare the same package (e.g.
+                            // the same public id via different aliases) more
+                            // than once; both constraints must hold, so
+                            // intersect them into a single dependency.
+                            const coalesced = try coalesceDependencies(gpa, new_deps.items);
 
                             var out: std.ArrayList(Incompatibility) = .empty;
                             if (idx) |at| {
-                                const lowers = try self.depBounds(lister, versions, at, new_deps.items, false);
-                                const uppers = try self.depBounds(lister, versions, at, new_deps.items, true);
-                                for (new_deps.items) |dep| {
+                                const lowers = try self.depBounds(lister, versions, at, coalesced, false);
+                                const uppers = try self.depBounds(lister, versions, at, coalesced, true);
+                                for (coalesced) |dep| {
                                     const r = try R.between(
                                         gpa,
                                         lowers.get(dep.package),
@@ -896,7 +919,7 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                                 // the singleton as listed so a later call does
                                 // not re-emit the same incompatibilities.
                                 const r = try R.singleton(gpa, v);
-                                for (new_deps.items) |dep| {
+                                for (coalesced) |dep| {
                                     const merged = if (lister.already_listed.get(dep.package)) |old|
                                         try old.unionWith(r, gpa)
                                     else
@@ -951,14 +974,22 @@ pub fn Solver(comptime P: type, comptime V: type) type {
                             .known => |ds| {
                                 for (deps) |dep| {
                                     if (!remaining.contains(dep.package)) continue;
-                                    var same = false;
+                                    // A neighbour may declare the package
+                                    // several times; it counts as "the same
+                                    // dependency" only when every such
+                                    // declaration matches the coalesced
+                                    // constraint.
+                                    var found = false;
+                                    var same = true;
                                     for (ds) |d| {
-                                        if (P.eql(d.package, dep.package)) {
-                                            same = d.constraint.eql(dep.constraint);
+                                        if (!P.eql(d.package, dep.package)) continue;
+                                        found = true;
+                                        if (!d.constraint.eql(dep.constraint)) {
+                                            same = false;
                                             break;
                                         }
                                     }
-                                    if (!same) {
+                                    if (!found or !same) {
                                         try bounds.put(dep.package, boundary);
                                         _ = remaining.remove(dep.package);
                                     }
@@ -1104,6 +1135,26 @@ pub fn Solver(comptime P: type, comptime V: type) type {
             return null;
         }
 
+        /// Coalesce several dependencies on the same package into one with an
+        /// intersected constraint. An empty intersection yields a
+        /// `negative(∅)` term that is always satisfied, which correctly makes
+        /// the depender version unselectable.
+        fn coalesceDependencies(gpa: Allocator, deps: []const Dependency) ![]Dependency {
+            var out: std.ArrayList(Dependency) = .empty;
+            for (deps) |dep| {
+                var merged = false;
+                for (out.items) |*existing| {
+                    if (P.eql(existing.package, dep.package)) {
+                        existing.constraint = try existing.constraint.intersection(dep.constraint, gpa);
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged) try out.append(gpa, dep);
+            }
+            return out.items;
+        }
+
         fn sortDeps(deps: []Dependency) void {
             const C = struct {
                 fn lt(_: void, a: Dependency, b: Dependency) bool {
@@ -1182,7 +1233,7 @@ pub fn Solver(comptime P: type, comptime V: type) type {
         fn validateProvider(comptime PT: type) void {
             const C = if (@typeInfo(PT) == .pointer) std.meta.Child(PT) else PT;
             if (!@hasDecl(C, "listVersions"))
-                @compileError("provider must implement `fn listVersions(self, gpa, package) ![]Version`");
+                @compileError("provider must implement `fn listVersions(self, gpa, package) ![]const Version`");
             if (!@hasDecl(C, "dependencies"))
                 @compileError("provider must implement `fn dependencies(self, gpa, package, version) !DepResult`");
         }

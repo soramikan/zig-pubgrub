@@ -38,7 +38,7 @@ const S = pubgrub.SemverSolver;      // Solver(StringPackage, SemanticVersion)
 const V = pubgrub.SemanticVersion;
 
 const Provider = struct {
-    pub fn listVersions(self: *const Provider, gpa: std.mem.Allocator, pkg: pubgrub.StringPackage) ![]V {
+    pub fn listVersions(self: *const Provider, gpa: std.mem.Allocator, pkg: pubgrub.StringPackage) ![]const V {
         // pkg の既知バージョンをすべて返す（順不同）。
         // パッケージが存在しない場合は error.PackageNotFound を返す。
     }
@@ -80,7 +80,7 @@ pub fn main() !void {
 
 ### プロバイダ契約
 
-- `listVersions(gpa, package) ![]V` — 既知の全バージョンを返します。
+- `listVersions(gpa, package) ![]const V` — 既知の全バージョンを返します。
   `error.PackageNotFound` はハードエラーではなくソルバの競合として
   扱われます。それ以外のエラーは解決処理を中断します。
 - `dependencies(gpa, package, version) !DepResult` — `.known` の依存

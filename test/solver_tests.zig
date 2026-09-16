@@ -594,3 +594,92 @@ test "conflict through mutually dependent packages terminates" {
     try T.expect(std.mem.indexOf(u8, msg, "p0 <0.1.0") != null);
     try T.expect(std.mem.indexOf(u8, msg, "version solving failed") != null);
 }
+
+// Regression: a provider may return a `[]const V` slice (e.g. one backed by a
+// module-level table) and include duplicate versions. The solver must accept
+// it, copy it, and deduplicate before selecting.
+const duplicate_versions = [_]pubgrub.SemanticVersion{
+    .{ .major = 1, .minor = 0, .patch = 0 },
+    .{ .major = 1, .minor = 0, .patch = 0 },
+    .{ .major = 2, .minor = 0, .patch = 0 },
+};
+
+const ConstProvider = struct {
+    pub fn listVersions(
+        _: *const ConstProvider,
+        _: std.mem.Allocator,
+        _: pubgrub.StringPackage,
+    ) anyerror![]const pubgrub.SemanticVersion {
+        return &duplicate_versions;
+    }
+
+    pub fn dependencies(
+        _: *const ConstProvider,
+        _: std.mem.Allocator,
+        _: pubgrub.StringPackage,
+        _: pubgrub.SemanticVersion,
+    ) anyerror!S.DepResult {
+        return .{ .known = &.{} };
+    }
+};
+
+test "provider may return a const slice containing duplicate versions" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const provider = ConstProvider{};
+    const deps = [_]S.Dependency{mock.dep(gpa, "lib", "*")};
+    var out = try S.solve(gpa, &provider, mock.named("root"), v("0.0.0"), &deps, .{});
+    defer out.deinit();
+    const sel = mock.expectResolved(&out);
+    try T.expectEqual(v("2.0.0"), mock.selected(sel, "lib").?);
+}
+
+test "duplicate dependencies on the same package are intersected" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const registry = Mock{
+        .pkgs = &.{
+            .{ .name = "a", .versions = &.{.{
+                .version = "1.0.0",
+                .deps = &.{
+                    .{ .name = "c", .req = ">=1.0.0" },
+                    .{ .name = "c", .req = ">=2.0.0" },
+                },
+            }} },
+            .{ .name = "c", .versions = &.{
+                .{ .version = "1.0.0" },
+                .{ .version = "2.0.0" },
+            } },
+        },
+    };
+    const deps = [_]S.Dependency{mock.dep(gpa, "a", "*")};
+    var out = try mock.solve(gpa, &registry, &deps, .{});
+    defer out.deinit();
+    const sel = mock.expectResolved(&out);
+    try T.expectEqual(v("2.0.0"), mock.selected(sel, "c").?);
+}
+
+test "contradictory duplicate dependencies make the depender unselectable" {
+    var a = arena();
+    defer a.deinit();
+    const gpa = a.allocator();
+    const registry = Mock{
+        .pkgs = &.{
+            .{ .name = "a", .versions = &.{.{
+                .version = "1.0.0",
+                .deps = &.{
+                    .{ .name = "c", .req = ">=2.0.0" },
+                    .{ .name = "c", .req = "<2.0.0" },
+                },
+            }} },
+            .{ .name = "c", .versions = &.{.{ .version = "1.0.0" }} },
+        },
+    };
+    const deps = [_]S.Dependency{mock.dep(gpa, "a", "*")};
+    var out = try mock.solve(gpa, &registry, &deps, .{});
+    defer out.deinit();
+    const msg = mock.expectFailed(&out);
+    try T.expect(std.mem.indexOf(u8, msg, "version solving failed") != null);
+}

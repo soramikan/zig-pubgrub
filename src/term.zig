@@ -129,98 +129,120 @@ fn nv(n: u32) NumVer {
     return .{ .n = n };
 }
 
-fn range(lo: u32, hi: u32) !NR {
-    return NR.between(T.allocator, nv(lo), true, nv(hi), false);
+fn range(gpa: std.mem.Allocator, lo: u32, hi: u32) !NR {
+    return NR.between(gpa, nv(lo), true, nv(hi), false);
 }
 
 test "positive/positive relation" {
-    const a: TT = .{ .positive = try range(1, 5) };
-    const sup: TT = .{ .positive = try range(0, 9) };
-    const dis: TT = .{ .positive = try range(5, 9) };
-    const ovl: TT = .{ .positive = try range(4, 9) };
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const a: TT = .{ .positive = try range(gpa, 1, 5) };
+    const sup: TT = .{ .positive = try range(gpa, 0, 9) };
+    const dis: TT = .{ .positive = try range(gpa, 5, 9) };
+    const ovl: TT = .{ .positive = try range(gpa, 4, 9) };
     try T.expectEqual(.subset, a.relation(sup));
     try T.expectEqual(.disjoint, a.relation(dis));
     try T.expectEqual(.overlapping, a.relation(ovl));
 }
 
 test "positive/negative relation" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
     // {1..4} ⊆ not {5..8}: the ranges are disjoint.
-    const a: TT = .{ .positive = try range(1, 5) };
-    const notb: TT = .{ .negative = try range(5, 9) };
+    const a: TT = .{ .positive = try range(gpa, 1, 5) };
+    const notb: TT = .{ .negative = try range(gpa, 5, 9) };
     try T.expectEqual(.subset, a.relation(notb));
     // {1..4} disjoint from not {1..4}: nothing satisfies both.
-    const nota: TT = .{ .negative = try range(1, 5) };
+    const nota: TT = .{ .negative = try range(gpa, 1, 5) };
     try T.expectEqual(.disjoint, a.relation(nota));
     // {1..9} vs not {3..5}: some versions inside, some outside.
-    const big: TT = .{ .positive = try range(1, 10) };
-    const notsmall: TT = .{ .negative = try range(3, 6) };
+    const big: TT = .{ .positive = try range(gpa, 1, 10) };
+    const notsmall: TT = .{ .negative = try range(gpa, 3, 6) };
     try T.expectEqual(.overlapping, big.relation(notsmall));
 }
 
 test "negative/positive relation" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
     // not {1..4} ⊆ {0..4}?? ¬a ⊆ b iff a ∪ b = all — here not.
-    const nota: TT = .{ .negative = try range(1, 5) };
-    const b: TT = .{ .positive = try range(0, 5) };
+    const nota: TT = .{ .negative = try range(gpa, 1, 5) };
+    const b: TT = .{ .positive = try range(gpa, 0, 5) };
     try T.expectEqual(.overlapping, nota.relation(b));
     // ¬a disjoint from b when b ⊆ a.
-    const small: TT = .{ .positive = try range(2, 4) };
+    const small: TT = .{ .positive = try range(gpa, 2, 4) };
     try T.expectEqual(.disjoint, nota.relation(small));
     // ¬a is never a subset of b, even when a ∪ b covers everything: the
     // unselected selection satisfies ¬a but violates b. a = {5..}, b = {..5}.
-    const na2: TT = .{ .negative = .{ .intervals = (try NR.between(T.allocator, nv(5), true, null, false)).intervals } };
-    const b2: TT = .{ .positive = .{ .intervals = (try NR.between(T.allocator, null, true, nv(5), false)).intervals } };
+    const na2: TT = .{ .negative = .{ .intervals = (try NR.between(gpa, nv(5), true, null, false)).intervals } };
+    const b2: TT = .{ .positive = .{ .intervals = (try NR.between(gpa, null, true, nv(5), false)).intervals } };
     try T.expectEqual(.overlapping, na2.relation(b2));
 }
 
 test "negative/negative relation" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
     // not {0..8} ⊆ not {3..5} (the stronger exclusion implies the weaker).
-    const notbig: TT = .{ .negative = try range(0, 9) };
-    const notsmall: TT = .{ .negative = try range(3, 6) };
+    const notbig: TT = .{ .negative = try range(gpa, 0, 9) };
+    const notsmall: TT = .{ .negative = try range(gpa, 3, 6) };
     try T.expectEqual(.subset, notbig.relation(notsmall));
     try T.expectEqual(.overlapping, notsmall.relation(notbig));
     // Two negatives are never disjoint: the unselected selection satisfies
     // both, even when their ranges cover everything.
-    const na: TT = .{ .negative = try range(0, 5) };
-    const nb: TT = .{ .negative = try range(5, 9) };
+    const na: TT = .{ .negative = try range(gpa, 0, 5) };
+    const nb: TT = .{ .negative = try range(gpa, 5, 9) };
     try T.expectEqual(.overlapping, na.relation(nb));
 }
 
 test "intersect" {
-    const a: TT = .{ .positive = try range(1, 9) };
-    const b: TT = .{ .positive = try range(3, 6) };
-    const i = try a.intersect(b, T.allocator);
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const a: TT = .{ .positive = try range(gpa, 1, 9) };
+    const b: TT = .{ .positive = try range(gpa, 3, 6) };
+    const i = try a.intersect(b, gpa);
     try T.expect(i.positive.contains(nv(4)));
     try T.expect(!i.positive.contains(nv(2)));
     // positive ∩ negative = positive difference
-    const notb: TT = .{ .negative = try range(3, 6) };
-    const i_pos = try a.intersect(notb, T.allocator);
+    const notb: TT = .{ .negative = try range(gpa, 3, 6) };
+    const i_pos = try a.intersect(notb, gpa);
     try T.expect(i_pos.positive.contains(nv(2)));
     try T.expect(!i_pos.positive.contains(nv(4)));
-    // negative ∩ negative = negative union
-    const na: TT = .{ .negative = try range(1, 4) };
-    const i_neg = try na.intersect(notb, T.allocator);
+    // negative ∩ negative = negative union of the excluded ranges.
+    const na: TT = .{ .negative = try range(gpa, 1, 4) };
+    const i_neg = try na.intersect(notb, gpa);
     try T.expect(i_neg == .negative);
-    try T.expect(!i_neg.negative.contains(nv(2))); // excluded by ¬a
-    try T.expect(!i_neg.negative.contains(nv(5))); // excluded by ¬b
-    try T.expect(i_neg.negative.contains(nv(9))); // excluded by neither
-    // contradictory: pos{1..4} ∩ pos{5..8} = empty positive
-    const c: TT = .{ .positive = try range(5, 9) };
-    const i_empty = try a.intersect(c, T.allocator);
+    try T.expect(i_neg.negative.contains(nv(2))); // excluded by ¬a
+    try T.expect(i_neg.negative.contains(nv(5))); // excluded by ¬b
+    try T.expect(!i_neg.negative.contains(nv(9))); // excluded by neither
+    // contradictory: pos{1..4} ∩ pos{5..9} = empty positive
+    const p1: TT = .{ .positive = try range(gpa, 1, 4) };
+    const c: TT = .{ .positive = try range(gpa, 5, 9) };
+    const i_empty = try p1.intersect(c, gpa);
     try T.expect(i_empty.isImpossible());
 }
 
 test "difference" {
-    const a: TT = .{ .positive = try range(1, 9) };
-    const b: TT = .{ .positive = try range(3, 6) };
-    const d = (try a.difference(b, T.allocator)).?;
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const a: TT = .{ .positive = try range(gpa, 1, 9) };
+    const b: TT = .{ .positive = try range(gpa, 3, 6) };
+    const d = (try a.difference(b, gpa)).?;
     try T.expect(d.positive.contains(nv(2)));
     try T.expect(!d.positive.contains(nv(4)));
-    const none = try b.difference(a, T.allocator);
+    const none = try b.difference(a, gpa);
     try T.expect(none == null);
 }
 
 test "inverse" {
-    const a: TT = .{ .positive = try range(1, 5) };
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const a: TT = .{ .positive = try range(gpa, 1, 5) };
     const ai = a.inverse();
     try T.expect(ai == .negative);
     try T.expect(ai.inverse().positive.contains(nv(3)));

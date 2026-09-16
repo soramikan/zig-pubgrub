@@ -294,8 +294,8 @@ fn isWildcard(s: []const u8) bool {
 
 const T = std.testing;
 
-fn p(text: []const u8) !SemverRange {
-    return parse(T.allocator, text);
+fn p(gpa: std.mem.Allocator, text: []const u8) !SemverRange {
+    return parse(gpa, text);
 }
 
 fn v(text: []const u8) SemanticVersion {
@@ -303,103 +303,127 @@ fn v(text: []const u8) SemanticVersion {
 }
 
 test "parse wildcard" {
-    try T.expect((try p("*")).isAny());
-    try T.expect((try p("x")).isAny());
-    try T.expect((try p("1.x")).eql(try p(">=1.0.0 <2.0.0")));
-    try T.expect((try p("1.2.x")).eql(try p(">=1.2.0 <1.3.0")));
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    try T.expect((try p(gpa, "*")).isAny());
+    try T.expect((try p(gpa, "x")).isAny());
+    try T.expect((try p(gpa, "1.x")).eql(try p(gpa, ">=1.0.0 <2.0.0")));
+    try T.expect((try p(gpa, "1.2.x")).eql(try p(gpa, ">=1.2.0 <1.3.0")));
 }
 
 test "parse exact and partial" {
-    const r = try p("1.2.3");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, "1.2.3");
     try T.expect(r.contains(v("1.2.3")));
     try T.expect(!r.contains(v("1.2.4")));
-    const part = try p("1.2");
+    const part = try p(gpa, "1.2");
     try T.expect(part.contains(v("1.2.0")));
     try T.expect(part.contains(v("1.2.9")));
     try T.expect(!part.contains(v("1.3.0")));
 }
 
 test "parse comparators" {
-    const r = try p(">=1.0.0 <2.0.0");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, ">=1.0.0 <2.0.0");
     try T.expect(r.contains(v("1.0.0")));
     try T.expect(r.contains(v("1.9.9")));
     try T.expect(!r.contains(v("2.0.0")));
     try T.expect(!r.contains(v("0.9.9")));
-    const gt = try p(">1.2.3");
+    const gt = try p(gpa, ">1.2.3");
     try T.expect(!gt.contains(v("1.2.3")));
     try T.expect(gt.contains(v("1.2.4")));
-    const le = try p("<=1.2.3");
+    const le = try p(gpa, "<=1.2.3");
     try T.expect(le.contains(v("1.2.3")));
     try T.expect(!le.contains(v("1.2.4")));
-    const gt_part = try p(">1.2");
+    const gt_part = try p(gpa, ">1.2");
     try T.expect(!gt_part.contains(v("1.2.9")));
     try T.expect(gt_part.contains(v("1.3.0")));
-    const le_part = try p("<=1.2");
+    const le_part = try p(gpa, "<=1.2");
     try T.expect(le_part.contains(v("1.2.9")));
     try T.expect(!le_part.contains(v("1.3.0")));
 }
 
 test "parse caret" {
-    const r = try p("^1.2.3");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, "^1.2.3");
     try T.expect(r.contains(v("1.2.3")));
     try T.expect(r.contains(v("1.9.9")));
     try T.expect(!r.contains(v("2.0.0")));
     try T.expect(!r.contains(v("1.2.2")));
-    const z = try p("^0.2.3");
+    const z = try p(gpa, "^0.2.3");
     try T.expect(z.contains(v("0.2.9")));
     try T.expect(!z.contains(v("0.3.0")));
-    const zz = try p("^0.0.3");
+    const zz = try p(gpa, "^0.0.3");
     try T.expect(!zz.contains(v("0.0.4")));
     // Missing components are wildcards: `^0` ≡ `0.x.x`, `^0.0` ≡ `0.0.x`.
-    const w0 = try p("^0");
+    const w0 = try p(gpa, "^0");
     try T.expect(w0.contains(v("0.9.9")));
     try T.expect(!w0.contains(v("1.0.0")));
-    const w00 = try p("^0.0");
+    const w00 = try p(gpa, "^0.0");
     try T.expect(w00.contains(v("0.0.9")));
     try T.expect(!w00.contains(v("0.1.0")));
-    const w0x = try p("^0.0.x");
+    const w0x = try p(gpa, "^0.0.x");
     try T.expect(w0x.contains(v("0.0.9")));
     try T.expect(!w0x.contains(v("0.1.0")));
-    const w02 = try p("^0.2");
+    const w02 = try p(gpa, "^0.2");
     try T.expect(w02.contains(v("0.2.9")));
     try T.expect(!w02.contains(v("0.3.0")));
 }
 
 test "parse tilde" {
-    const r = try p("~1.2.3");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, "~1.2.3");
     try T.expect(r.contains(v("1.2.9")));
     try T.expect(!r.contains(v("1.3.0")));
-    const t = try p("~1");
+    const t = try p(gpa, "~1");
     try T.expect(t.contains(v("1.9.9")));
     try T.expect(!t.contains(v("2.0.0")));
-    const t0 = try p("~0");
+    const t0 = try p(gpa, "~0");
     try T.expect(t0.contains(v("0.9.9")));
     try T.expect(!t0.contains(v("1.0.0")));
-    const t00 = try p("~0.0");
+    const t00 = try p(gpa, "~0.0");
     try T.expect(t00.contains(v("0.0.9")));
     try T.expect(!t00.contains(v("0.1.0")));
 }
 
 test "parse union" {
-    const r = try p("<1.0.0 || >=2.0.0");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, "<1.0.0 || >=2.0.0");
     try T.expect(r.contains(v("0.9.0")));
     try T.expect(!r.contains(v("1.5.0")));
     try T.expect(r.contains(v("2.0.0")));
 }
 
 test "parse prerelease bound" {
-    const r = try p(">=1.0.0-alpha");
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    const r = try p(gpa, ">=1.0.0-alpha");
     try T.expect(r.contains(v("1.0.0-alpha")));
     try T.expect(r.contains(v("1.0.0")));
-    const exact = try p("=1.0.0-alpha.1");
+    const exact = try p(gpa, "=1.0.0-alpha.1");
     try T.expect(exact.contains(v("1.0.0-alpha.1")));
     try T.expect(!exact.contains(v("1.0.0-alpha.2")));
 }
 
 test "parse errors" {
-    try T.expectError(error.Invalid, parse(T.allocator, ""));
-    try T.expectError(error.Invalid, parse(T.allocator, "1.2.3.4"));
-    try T.expectError(error.Invalid, parse(T.allocator, ">="));
-    try T.expectError(error.Invalid, parse(T.allocator, "a.b.c"));
-    try T.expectError(error.Invalid, parse(T.allocator, "1.2.3|2.0.0"));
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+    try T.expectError(error.Invalid, parse(gpa, ""));
+    try T.expectError(error.Invalid, parse(gpa, "1.2.3.4"));
+    try T.expectError(error.Invalid, parse(gpa, ">="));
+    try T.expectError(error.Invalid, parse(gpa, "a.b.c"));
+    try T.expectError(error.Invalid, parse(gpa, "1.2.3|2.0.0"));
 }

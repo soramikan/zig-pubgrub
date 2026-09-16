@@ -148,11 +148,18 @@ pub const SemanticVersion = struct {
 };
 
 test "parse and compare" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     const a = try SemanticVersion.parse("1.2.3-alpha.1+build.5");
     try std.testing.expectEqual(@as(u64, 1), a.major);
+    try std.testing.expectEqual(@as(u64, 2), a.minor);
+    try std.testing.expectEqual(@as(u64, 3), a.patch);
     try std.testing.expectEqualStrings("alpha.1", a.pre);
     try std.testing.expectEqualStrings("build.5", a.build);
-    try std.testing.expectEqualStrings("1.2.3-alpha.1+build.5", try std.fmt.allocPrint(std.testing.allocator, "{f}", .{a}));
+    try std.testing.expectEqualStrings(
+        "1.2.3-alpha.1+build.5",
+        try std.fmt.allocPrint(arena.allocator(), "{f}", .{a}),
+    );
 
     const order = std.math.order;
     const V = SemanticVersion;

@@ -39,7 +39,7 @@ const S = pubgrub.SemverSolver;      // Solver(StringPackage, SemanticVersion)
 const V = pubgrub.SemanticVersion;
 
 const Provider = struct {
-    pub fn listVersions(self: *const Provider, gpa: std.mem.Allocator, pkg: pubgrub.StringPackage) ![]V {
+    pub fn listVersions(self: *const Provider, gpa: std.mem.Allocator, pkg: pubgrub.StringPackage) ![]const V {
         // Return every known version of `pkg`, in any order.
         // Return error.PackageNotFound when the package does not exist.
     }
@@ -81,7 +81,7 @@ See `examples/resolve_demo.zig` for a complete runnable provider
 
 ### Provider contract
 
-- `listVersions(gpa, package) ![]V` — every known version; may return
+- `listVersions(gpa, package) ![]const V` — every known version; may return
   `error.PackageNotFound`, which becomes a solver conflict rather than a
   hard error. Other errors abort the solve.
 - `dependencies(gpa, package, version) !DepResult` — `.known` dependency

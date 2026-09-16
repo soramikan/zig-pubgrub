@@ -19,8 +19,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // The integration suite imports the `pubgrub` module, so test blocks
+    // inside the library modules would otherwise never run. Build a separate
+    // artifact with `src/pubgrub.zig` as the test root to execute them.
+    const lib_tests = b.addTest(.{ .root_module = mod });
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
 
     const fmt_step = b.step("fmt-check", "Check source formatting");
     const fmt = b.addFmt(.{

@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
 
     const fmt_step = b.step("fmt-check", "Check source formatting");
     const fmt = b.addFmt(.{
-        .paths = &.{ "src", "build.zig", "build.zig.zon", "examples", "test" },
+        .paths = b.pathList(&.{ "src", "build.zig", "build.zig.zon", "examples", "test" }),
         .check = true,
     });
     fmt_step.dependOn(&fmt.step);

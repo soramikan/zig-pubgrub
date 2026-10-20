@@ -6,22 +6,15 @@ const Allocator = std.mem.Allocator;
 /// explanation. Port of pub's solver failure writer; see
 /// https://github.com/dart-lang/pub/tree/main/doc/solver.md#error-reporting.
 ///
-fn fieldType(comptime S: type, comptime name: []const u8) type {
-    for (@typeInfo(S).@"struct".fields) |f| {
-        if (std.mem.eql(u8, f.name, name)) return f.type;
-    }
-    unreachable;
-}
-
 /// `I` is the solver's `Incompatibility` type (from `Solver(P, V)`).
 pub fn Reporter(comptime I: type) type {
     return struct {
         const Self = @This();
 
         const Incompatibility = I;
-        const TermEntry = std.meta.Child(fieldType(I, "terms"));
-        const P = fieldType(TermEntry, "package");
-        const T = fieldType(TermEntry, "term");
+        const TermEntry = std.meta.Child(@FieldType(I, "terms"));
+        const P = @FieldType(TermEntry, "package");
+        const T = @FieldType(TermEntry, "term");
 
         const Line = struct { msg: []const u8, number: ?u32 };
 
